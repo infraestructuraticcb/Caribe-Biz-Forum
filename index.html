@@ -7,6 +7,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Anton&family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
 <style>
   :root {
     color-scheme: dark;
@@ -301,6 +302,58 @@
 
   ::selection { background: rgba(212,250,58,0.3); }
 
+  .provider-kpis { margin-bottom: 20px; }
+  .kpi-card {
+    padding: 30px 24px;
+    text-align: center;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 8px;
+  }
+  .kpi-label { font-size: 12px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--text-1); font-weight: 600; }
+  .kpi-number {
+    font-family: 'Anton', sans-serif;
+    font-size: clamp(48px, 15vw, 84px);
+    line-height: 1;
+    color: var(--accent);
+    text-shadow: 0 0 10px rgba(212,250,58,0.5), 0 0 26px rgba(212,250,58,0.3);
+  }
+  .live-indicator { display: inline-flex; align-items: center; gap: 6px; font-size: 11px; color: var(--text-2); letter-spacing: 0.06em; text-transform: uppercase; margin-top: 2px; }
+  .live-indicator .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--ok); box-shadow: 0 0 8px var(--ok); animation: blinkDot 1.6s ease-in-out infinite; }
+  @keyframes blinkDot { 0%, 100% { opacity: 1; } 50% { opacity: 0.3; } }
+
+  .chart-card { padding: 22px; margin-bottom: 24px; }
+  .chart-card canvas { margin-top: 14px; max-width: 100%; }
+
+  .comment-resolved {
+    padding: 12px 14px;
+    border-radius: 12px;
+    background: rgba(126,242,154,0.08);
+    border: 1px solid rgba(126,242,154,0.25);
+  }
+  .comment-resolved-label { font-size: 11px; font-weight: 700; color: var(--ok); text-transform: uppercase; letter-spacing: 0.05em; }
+  .comment-resolved-text { margin: 6px 0 4px; font-size: 13.5px; color: var(--text-0); white-space: pre-wrap; word-break: break-word; }
+  .comment-resolved-time { font-size: 11px; color: var(--text-2); }
+
+  .comment-form { display: flex; flex-direction: column; gap: 8px; }
+  .comment-input {
+    width: 100%;
+    min-height: 60px;
+    resize: vertical;
+    background: rgba(0,0,0,0.3);
+    border: 1px solid var(--card-border);
+    border-radius: 10px;
+    color: var(--text-0);
+    font-family: inherit;
+    font-size: 13.5px;
+    padding: 10px 12px;
+    outline: none;
+  }
+  .comment-input::placeholder { color: var(--text-2); }
+  .comment-input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px rgba(212,250,58,0.12); }
+  .comment-submit-btn { align-self: flex-end; }
+
   @media (max-width: 480px) {
     .wrap { padding: 32px 16px 56px; }
     .form-footer { flex-direction: column-reverse; align-items: stretch; }
@@ -361,6 +414,31 @@
     <div id="adminInner"></div>
   </div>
 
+  <div class="wrap" id="view-provider" style="display:none;">
+    <div class="admin-topbar">
+      <a class="btn-pill" href="#">← Volver al formulario</a>
+      <span class="admin-title">Panel del proveedor</span>
+    </div>
+
+    <div class="provider-kpis">
+      <div class="card kpi-card">
+        <span class="kpi-label">Total de incidencias reportadas</span>
+        <span class="kpi-number" id="providerCount">0</span>
+        <span class="live-indicator"><span class="dot"></span>En vivo</span>
+      </div>
+    </div>
+
+    <div class="card chart-card">
+      <span class="field-label">Incidencias por hora</span>
+      <canvas id="providerChart" height="220"></canvas>
+    </div>
+
+    <div class="log-header">
+      <span class="log-title">Detalle de incidencias <span class="count-badge" id="providerListCount">0</span></span>
+    </div>
+    <div id="providerList"><div class="empty-state">Cargando…</div></div>
+  </div>
+
   <script type="module">
     // ──────────────────────────────────────────────────────────────
     // 1) PEGA AQUÍ TU firebaseConfig (lo copiaste del paso 2 de la
@@ -377,7 +455,7 @@
 
     import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
     import {
-      getFirestore, collection, addDoc, onSnapshot, query, orderBy, limit, deleteDoc, doc
+      getFirestore, collection, addDoc, onSnapshot, query, orderBy, limit, deleteDoc, updateDoc, doc
     } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
 
     const app = initializeApp(firebaseConfig);
@@ -390,6 +468,10 @@
     const homeEl = document.getElementById('view-home');
     const adminEl = document.getElementById('view-admin');
     const adminInner = document.getElementById('adminInner');
+    const providerEl = document.getElementById('view-provider');
+    let providerSubscribed = false;
+    let providerChartInstance = null;
+    let commentDrafts = {};
 
     const formEl = document.getElementById('form');
     const reporterEl = document.getElementById('reporterName');
@@ -465,12 +547,20 @@
         return;
       }
       listEl.innerHTML = incidents.map(function (item) {
+        var commentBlock = item.providerComment
+          ? '<div class="comment-resolved">' +
+              '<span class="comment-resolved-label">✅ Respuesta del proveedor</span>' +
+              '<p class="comment-resolved-text">' + escapeHtml(item.providerComment) + '</p>' +
+              '<span class="comment-resolved-time">' + formatDate(item.providerCommentAt) + '</span>' +
+            '</div>'
+          : '';
         return '<div class="card incident-card">' +
           '<div class="incident-meta">' +
             '<span class="incident-reporter">' + escapeHtml(item.reporter || 'Anónimo') + '</span>' +
             '<span class="incident-time">' + formatDate(item.ts) + '</span>' +
           '</div>' +
           '<p class="incident-text">' + escapeHtml(item.text || '') + '</p>' +
+          commentBlock +
           '<div class="incident-card-actions">' +
             '<button type="button" class="btn-pill btn-pill-danger btn-pill-sm delete-incident-btn" data-id="' + escapeHtml(item.id) + '">🗑 Eliminar</button>' +
           '</div>' +
@@ -499,6 +589,12 @@
         lines.push('');
         lines.push(item.text || '');
         lines.push('');
+        if (item.providerComment) {
+          lines.push('**Respuesta del proveedor:** ' + item.providerComment);
+          lines.push('');
+          lines.push('_Respondido: ' + formatDate(item.providerCommentAt) + '_');
+          lines.push('');
+        }
         lines.push('---');
         lines.push('');
       });
@@ -552,7 +648,7 @@
       onSnapshot(q, function (snap) {
         incidents = snap.docs.map(function (d) {
           var data = d.data() || {};
-          return { id: d.id, text: data.text, reporter: data.reporter, ts: data.ts };
+          return { id: d.id, text: data.text, reporter: data.reporter, ts: data.ts, providerComment: data.providerComment, providerCommentAt: data.providerCommentAt };
         });
         renderIncidentList();
       }, function (err) {
@@ -636,14 +732,169 @@
       else renderAdminLogin();
     }
 
+    function computeHourlyBuckets(items) {
+      var map = {};
+      items.forEach(function (it) {
+        var d = (it.ts && it.ts.toDate) ? it.ts.toDate() : new Date(it.ts);
+        var key = d.getFullYear() + '-' + d.getMonth() + '-' + d.getDate() + '-' + d.getHours();
+        if (!map[key]) map[key] = { count: 0, date: d };
+        map[key].count++;
+      });
+      var keys = Object.keys(map).sort(function (a, b) { return map[a].date - map[b].date; });
+      var labels = keys.map(function (k) {
+        return map[k].date.toLocaleTimeString('es-CO', { hour: '2-digit', minute: '2-digit' });
+      });
+      var data = keys.map(function (k) { return map[k].count; });
+      return { labels: labels, data: data };
+    }
+
+    function renderProviderChart(items) {
+      var canvas = document.getElementById('providerChart');
+      if (!canvas || typeof Chart === 'undefined') return;
+      var buckets = computeHourlyBuckets(items);
+      if (providerChartInstance) {
+        providerChartInstance.data.labels = buckets.labels;
+        providerChartInstance.data.datasets[0].data = buckets.data;
+        providerChartInstance.update();
+        return;
+      }
+      providerChartInstance = new Chart(canvas.getContext('2d'), {
+        type: 'bar',
+        data: {
+          labels: buckets.labels,
+          datasets: [{
+            label: 'Incidencias',
+            data: buckets.data,
+            backgroundColor: 'rgba(212,250,58,0.55)',
+            borderColor: '#D4FA3A',
+            borderWidth: 1,
+            borderRadius: 4,
+            maxBarThickness: 36
+          }]
+        },
+        options: {
+          responsive: true,
+          plugins: { legend: { display: false } },
+          scales: {
+            x: { ticks: { color: '#b7c2b6', font: { size: 11 } }, grid: { color: 'rgba(255,255,255,0.06)' } },
+            y: { beginAtZero: true, ticks: { color: '#b7c2b6', precision: 0, font: { size: 11 } }, grid: { color: 'rgba(255,255,255,0.08)' } }
+          }
+        }
+      });
+    }
+
+    function renderProviderIncidentCard(it) {
+      var commentBlock;
+      if (it.providerComment) {
+        commentBlock = '<div class="comment-resolved">' +
+          '<span class="comment-resolved-label">✅ Respuesta del proveedor</span>' +
+          '<p class="comment-resolved-text">' + escapeHtml(it.providerComment) + '</p>' +
+          '<span class="comment-resolved-time">' + formatDate(it.providerCommentAt) + '</span>' +
+        '</div>';
+      } else {
+        var draft = commentDrafts[it.id] || '';
+        commentBlock = '<div class="comment-form">' +
+          '<textarea class="comment-input" placeholder="Escribe cómo se resolvió este incidente...">' + escapeHtml(draft) + '</textarea>' +
+          '<button type="button" class="btn-pill comment-submit-btn" data-id="' + escapeHtml(it.id) + '">Enviar respuesta</button>' +
+        '</div>';
+      }
+      return '<div class="card incident-card">' +
+        '<div class="incident-meta"><span class="incident-time">' + formatDate(it.ts) + '</span></div>' +
+        '<p class="incident-text">' + escapeHtml(it.text || '') + '</p>' +
+        commentBlock +
+      '</div>';
+    }
+
+    async function submitProviderComment(id, text) {
+      try {
+        await updateDoc(doc(db, 'incidencias', id), {
+          providerComment: text,
+          providerCommentAt: Date.now()
+        });
+        return true;
+      } catch (err) {
+        console.error('provider comment error', err);
+        alert('No se pudo guardar la respuesta. Intenta de nuevo.');
+        return false;
+      }
+    }
+
+    function renderProviderView(items) {
+      var countEl = document.getElementById('providerCount');
+      var listCountEl = document.getElementById('providerListCount');
+      var listEl = document.getElementById('providerList');
+      if (countEl) countEl.textContent = items.length;
+      if (listCountEl) listCountEl.textContent = items.length;
+      if (listEl) {
+        if (items.length === 0) {
+          listEl.innerHTML = '<div class="empty-state">Aún no hay incidencias reportadas.</div>';
+        } else {
+          var sorted = items.slice().reverse();
+          listEl.innerHTML = sorted.map(renderProviderIncidentCard).join('');
+        }
+      }
+      renderProviderChart(items);
+    }
+
+    function ensureProviderSubscribed() {
+      if (providerSubscribed) return;
+      providerSubscribed = true;
+
+      var listEl = document.getElementById('providerList');
+      if (listEl) {
+        listEl.addEventListener('input', function (e) {
+          var ta = e.target.closest('.comment-input');
+          if (!ta) return;
+          var card = ta.closest('.incident-card');
+          var btn = card ? card.querySelector('.comment-submit-btn') : null;
+          var id = btn ? btn.getAttribute('data-id') : null;
+          if (id) commentDrafts[id] = ta.value;
+        });
+        listEl.addEventListener('click', function (e) {
+          var btn = e.target.closest('.comment-submit-btn');
+          if (!btn) return;
+          var id = btn.getAttribute('data-id');
+          var card = btn.closest('.incident-card');
+          var ta = card ? card.querySelector('.comment-input') : null;
+          var text = ta ? ta.value.trim() : '';
+          if (!text) { if (ta) ta.focus(); return; }
+          btn.disabled = true;
+          btn.textContent = 'Enviando…';
+          submitProviderComment(id, text).then(function (ok) {
+            if (ok) {
+              delete commentDrafts[id];
+            } else {
+              btn.disabled = false;
+              btn.textContent = 'Enviar respuesta';
+            }
+          });
+        });
+      }
+
+      var q = query(incidentsCol, orderBy('ts', 'asc'), limit(2000));
+      onSnapshot(q, function (snap) {
+        var items = snap.docs.map(function (d) {
+          var data = d.data() || {};
+          return { id: d.id, text: data.text, ts: data.ts, providerComment: data.providerComment, providerCommentAt: data.providerCommentAt };
+        });
+        renderProviderView(items);
+      }, function (err) {
+        console.error('provider onSnapshot error', err);
+      });
+    }
+
     function route() {
       var hash = location.hash.replace('#', '');
+      homeEl.style.display = 'none';
+      adminEl.style.display = 'none';
+      providerEl.style.display = 'none';
       if (hash === 'admin') {
-        homeEl.style.display = 'none';
         adminEl.style.display = 'block';
         renderAdminView();
+      } else if (hash === 'proveedor') {
+        providerEl.style.display = 'block';
+        ensureProviderSubscribed();
       } else {
-        adminEl.style.display = 'none';
         homeEl.style.display = 'block';
       }
     }
@@ -688,3 +939,4 @@
   </script>
 </body>
 </html>
+
