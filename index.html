@@ -337,6 +337,19 @@
   .comment-resolved-time { font-size: 11px; color: var(--text-2); }
 
   .comment-form { display: flex; flex-direction: column; gap: 8px; }
+  .comment-name-input {
+    width: 100%;
+    background: rgba(0,0,0,0.3);
+    border: 1px solid var(--card-border);
+    border-radius: 10px;
+    color: var(--text-0);
+    font-family: inherit;
+    font-size: 13.5px;
+    padding: 10px 12px;
+    outline: none;
+  }
+  .comment-name-input::placeholder { color: var(--text-2); }
+  .comment-name-input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px rgba(212,250,58,0.12); }
   .comment-input {
     width: 100%;
     min-height: 60px;
@@ -549,7 +562,7 @@
       listEl.innerHTML = incidents.map(function (item) {
         var commentBlock = item.providerComment
           ? '<div class="comment-resolved">' +
-              '<span class="comment-resolved-label">✅ Respuesta del proveedor</span>' +
+              '<span class="comment-resolved-label">✅ Resuelto por ' + escapeHtml(item.providerResolverName || 'Proveedor') + '</span>' +
               '<p class="comment-resolved-text">' + escapeHtml(item.providerComment) + '</p>' +
               '<span class="comment-resolved-time">' + formatDate(item.providerCommentAt) + '</span>' +
             '</div>'
@@ -590,6 +603,8 @@
         lines.push(item.text || '');
         lines.push('');
         if (item.providerComment) {
+          lines.push('**Resuelto por:** ' + (item.providerResolverName || 'Proveedor'));
+          lines.push('');
           lines.push('**Respuesta del proveedor:** ' + item.providerComment);
           lines.push('');
           lines.push('_Respondido: ' + formatDate(item.providerCommentAt) + '_');
@@ -648,7 +663,7 @@
       onSnapshot(q, function (snap) {
         incidents = snap.docs.map(function (d) {
           var data = d.data() || {};
-          return { id: d.id, text: data.text, reporter: data.reporter, ts: data.ts, providerComment: data.providerComment, providerCommentAt: data.providerCommentAt };
+          return { id: d.id, text: data.text, reporter: data.reporter, ts: data.ts, providerComment: data.providerComment, providerCommentAt: data.providerCommentAt, providerResolverName: data.providerResolverName };
         });
         renderIncidentList();
       }, function (err) {
@@ -787,29 +802,34 @@
       var commentBlock;
       if (it.providerComment) {
         commentBlock = '<div class="comment-resolved">' +
-          '<span class="comment-resolved-label">✅ Respuesta del proveedor</span>' +
+          '<span class="comment-resolved-label">✅ Resuelto por ' + escapeHtml(it.providerResolverName || 'Proveedor') + '</span>' +
           '<p class="comment-resolved-text">' + escapeHtml(it.providerComment) + '</p>' +
           '<span class="comment-resolved-time">' + formatDate(it.providerCommentAt) + '</span>' +
         '</div>';
       } else {
-        var draft = commentDrafts[it.id] || '';
+        var draft = commentDrafts[it.id] || { name: '', text: '' };
         commentBlock = '<div class="comment-form">' +
-          '<textarea class="comment-input" placeholder="Escribe cómo se resolvió este incidente...">' + escapeHtml(draft) + '</textarea>' +
+          '<input type="text" class="comment-name-input" placeholder="Tu nombre (quien resolvió)" value="' + escapeHtml(draft.name || '') + '">' +
+          '<textarea class="comment-input" placeholder="Escribe cómo se resolvió este incidente...">' + escapeHtml(draft.text || '') + '</textarea>' +
           '<button type="button" class="btn-pill comment-submit-btn" data-id="' + escapeHtml(it.id) + '">Enviar respuesta</button>' +
         '</div>';
       }
       return '<div class="card incident-card">' +
-        '<div class="incident-meta"><span class="incident-time">' + formatDate(it.ts) + '</span></div>' +
+        '<div class="incident-meta">' +
+          '<span class="incident-reporter">' + escapeHtml(it.reporter || 'Anónimo') + '</span>' +
+          '<span class="incident-time">' + formatDate(it.ts) + '</span>' +
+        '</div>' +
         '<p class="incident-text">' + escapeHtml(it.text || '') + '</p>' +
         commentBlock +
       '</div>';
     }
 
-    async function submitProviderComment(id, text) {
+    async function submitProviderComment(id, text, resolverName) {
       try {
         await updateDoc(doc(db, 'incidencias', id), {
           providerComment: text,
-          providerCommentAt: Date.now()
+          providerCommentAt: Date.now(),
+          providerResolverName: resolverName
         });
         return true;
       } catch (err) {
@@ -843,24 +863,31 @@
       var listEl = document.getElementById('providerList');
       if (listEl) {
         listEl.addEventListener('input', function (e) {
-          var ta = e.target.closest('.comment-input');
-          if (!ta) return;
-          var card = ta.closest('.incident-card');
+          var isComment = e.target.classList.contains('comment-input');
+          var isName = e.target.classList.contains('comment-name-input');
+          if (!isComment && !isName) return;
+          var card = e.target.closest('.incident-card');
           var btn = card ? card.querySelector('.comment-submit-btn') : null;
           var id = btn ? btn.getAttribute('data-id') : null;
-          if (id) commentDrafts[id] = ta.value;
+          if (!id) return;
+          if (!commentDrafts[id]) commentDrafts[id] = { name: '', text: '' };
+          if (isComment) commentDrafts[id].text = e.target.value;
+          if (isName) commentDrafts[id].name = e.target.value;
         });
         listEl.addEventListener('click', function (e) {
           var btn = e.target.closest('.comment-submit-btn');
           if (!btn) return;
           var id = btn.getAttribute('data-id');
           var card = btn.closest('.incident-card');
+          var nameInput = card ? card.querySelector('.comment-name-input') : null;
           var ta = card ? card.querySelector('.comment-input') : null;
+          var resolverName = nameInput ? nameInput.value.trim() : '';
           var text = ta ? ta.value.trim() : '';
+          if (!resolverName) { if (nameInput) nameInput.focus(); return; }
           if (!text) { if (ta) ta.focus(); return; }
           btn.disabled = true;
           btn.textContent = 'Enviando…';
-          submitProviderComment(id, text).then(function (ok) {
+          submitProviderComment(id, text, resolverName).then(function (ok) {
             if (ok) {
               delete commentDrafts[id];
             } else {
@@ -875,7 +902,7 @@
       onSnapshot(q, function (snap) {
         var items = snap.docs.map(function (d) {
           var data = d.data() || {};
-          return { id: d.id, text: data.text, ts: data.ts, providerComment: data.providerComment, providerCommentAt: data.providerCommentAt };
+          return { id: d.id, text: data.text, reporter: data.reporter, ts: data.ts, providerComment: data.providerComment, providerCommentAt: data.providerCommentAt, providerResolverName: data.providerResolverName };
         });
         renderProviderView(items);
       }, function (err) {
@@ -939,4 +966,5 @@
   </script>
 </body>
 </html>
+
 
